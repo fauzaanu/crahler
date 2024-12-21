@@ -1,6 +1,7 @@
 import asyncio
 import datetime
 import os
+import json
 from urllib.parse import urljoin, unquote, urlparse, urlunparse
 import aiohttp
 from crawlee.beautifulsoup_crawler import BeautifulSoupCrawler, BeautifulSoupCrawlingContext
@@ -33,6 +34,23 @@ DOCUMENT_TYPES = {
     '.yaml': 'data',
     '.yml': 'data'
 }
+
+HISTORY_FILE = 'download_history.json'
+
+def load_download_history():
+    """Load the download history from file"""
+    if os.path.exists(HISTORY_FILE):
+        try:
+            with open(HISTORY_FILE, 'r') as f:
+                return set(json.load(f))
+        except:
+            return set()
+    return set()
+
+def save_download_history(history):
+    """Save the download history to file"""
+    with open(HISTORY_FILE, 'w') as f:
+        json.dump(list(history), f)
 
 def add_www_to_url(url: str) -> str:
     """Add 'www.' to the domain if it's not present."""
@@ -85,8 +103,10 @@ async def main() -> None:
     for subdir in set(DOCUMENT_TYPES.values()):
         os.makedirs(os.path.join(base_dir, subdir), exist_ok=True)
 
-    # Keep track of processed files to avoid duplicates
-    processed_files = set()
+    # Load previously downloaded files
+    processed_files = load_download_history()
+    initial_file_count = len(processed_files)
+    context.log.info(f"Found {initial_file_count} previously downloaded files")
 
     crawler = BeautifulSoupCrawler(
         request_handler_timeout=datetime.timedelta(seconds=300),
@@ -134,9 +154,13 @@ async def main() -> None:
                             success = await download_file(absolute_url, save_path, context)
                             if success:
                                 context.log.info(f'Successfully downloaded: {filename}')
+                                # Save history after each successful download
+                                save_download_history(processed_files)
                             else:
+                                processed_files.remove(absolute_url)  # Remove from history if download failed
                                 context.log.error(f'Failed to download: {filename}')
                         except Exception as e:
+                            processed_files.remove(absolute_url)  # Remove from history if download failed
                             context.log.error(f'Failed to download {absolute_url}: {str(e)}')
                 else:
                     # Only enqueue links (not image sources) for crawling
@@ -145,6 +169,16 @@ async def main() -> None:
 
     initial_url = 'https://www.hdc.mv'
     await crawler.run([initial_url])
+
+    # Save final history
+    save_download_history(processed_files)
+
+    # Print summary
+    new_downloads = len(processed_files) - initial_file_count
+    context.log.info(f"Download session completed:")
+    context.log.info(f"Previously downloaded files: {initial_file_count}")
+    context.log.info(f"New files downloaded: {new_downloads}")
+    context.log.info(f"Total unique files: {len(processed_files)}")
 
 if __name__ == '__main__':
     asyncio.run(main())
