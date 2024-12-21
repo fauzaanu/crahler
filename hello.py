@@ -155,7 +155,7 @@ async def main() -> None:
                     if link.name == 'a':
                         await context.enqueue_links(selector=f'a[href="{url}"]')
 
-    initial_url = 'https://www.hdc.mv'
+    initial_url = os.getenv('INITIAL_URL', 'https://example.com')
     await crawler.run([initial_url])
 
     # Save final history

@@ -14,3 +14,5 @@ downloaded_files/
 downloaded_pdfs/
 .venv
 .idea
+.env
+download_history.json
