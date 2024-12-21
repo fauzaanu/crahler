@@ -1,7 +1,7 @@
 import asyncio
 import datetime
 import os
-from urllib.parse import urljoin, unquote
+from urllib.parse import urljoin, unquote, urlparse, urlunparse
 import aiohttp
 from crawlee.beautifulsoup_crawler import BeautifulSoupCrawler, BeautifulSoupCrawlingContext
 
@@ -34,7 +34,14 @@ DOCUMENT_TYPES = {
     '.yml': 'data'
 }
 
-async def download_file(url: str, save_path: str) -> None:
+def add_www_to_url(url: str) -> str:
+    """Add 'www.' to the domain if it's not present."""
+    parsed = urlparse(url)
+    if not parsed.netloc.startswith('www.'):
+        parsed = parsed._replace(netloc=f'www.{parsed.netloc}')
+    return urlunparse(parsed)
+
+async def download_file(url: str, save_path: str, context) -> None:
     """Download a file from the given URL and save it to the specified path."""
     async with aiohttp.ClientSession() as session:
         try:
@@ -42,14 +49,31 @@ async def download_file(url: str, save_path: str) -> None:
                 if response.status == 200:
                     with open(save_path, 'wb') as f:
                         while True:
-                            chunk = await response.content.read(8192)  # Read in chunks
+                            chunk = await response.content.read(8192)
                             if not chunk:
                                 break
                             f.write(chunk)
                     return True
                 return False
         except Exception as e:
-            print(f"Error downloading {url}: {str(e)}")
+            # If connection fails, try with www.
+            if 'getaddrinfo failed' in str(e) and not urlparse(url).netloc.startswith('www.'):
+                try:
+                    www_url = add_www_to_url(url)
+                    context.log.info(f'Retrying with www: {www_url}')
+                    async with session.get(www_url) as response:
+                        if response.status == 200:
+                            with open(save_path, 'wb') as f:
+                                while True:
+                                    chunk = await response.content.read(8192)
+                                    if not chunk:
+                                        break
+                                    f.write(chunk)
+                            return True
+                except Exception as e2:
+                    context.log.error(f"Error downloading (both with and without www): {url}: {str(e2)}")
+            else:
+                context.log.error(f"Error downloading {url}: {str(e)}")
             return False
 
 async def main() -> None:
@@ -107,7 +131,7 @@ async def main() -> None:
 
                         try:
                             context.log.info(f'Downloading {file_extension} file: {absolute_url}')
-                            success = await download_file(absolute_url, save_path)
+                            success = await download_file(absolute_url, save_path, context)
                             if success:
                                 context.log.info(f'Successfully downloaded: {filename}')
                             else:
@@ -119,7 +143,8 @@ async def main() -> None:
                     if link.name == 'a':
                         await context.enqueue_links(selector=f'a[href="{url}"]')
 
-    await crawler.run(['https://www.hdc.mv'])
+    initial_url = 'https://www.hdc.mv'
+    await crawler.run([initial_url])
 
 if __name__ == '__main__':
     asyncio.run(main())
