@@ -5,8 +5,12 @@ import json
 from urllib.parse import urljoin, unquote, urlparse, urlunparse
 import aiohttp
 from crawlee.beautifulsoup_crawler import BeautifulSoupCrawler, BeautifulSoupCrawlingContext
+import logging
 
-# Define supported file types
+# Set up basic logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 DOCUMENT_TYPES = {
     # Documents
     '.pdf': 'documents',
@@ -72,9 +76,7 @@ async def download_file(url: str, save_path: str, context) -> None:
                                 break
                             f.write(chunk)
                     return True
-                return False
         except Exception as e:
-            # If connection fails, try with www.
             if 'getaddrinfo failed' in str(e) and not urlparse(url).netloc.startswith('www.'):
                 try:
                     www_url = add_www_to_url(url)
@@ -95,18 +97,16 @@ async def download_file(url: str, save_path: str, context) -> None:
             return False
 
 async def main() -> None:
-    # Create base directory for downloads
     base_dir = "downloaded_files"
     os.makedirs(base_dir, exist_ok=True)
 
-    # Create subdirectories for each file type
     for subdir in set(DOCUMENT_TYPES.values()):
         os.makedirs(os.path.join(base_dir, subdir), exist_ok=True)
 
     # Load previously downloaded files
     processed_files = load_download_history()
     initial_file_count = len(processed_files)
-    context.log.info(f"Found {initial_file_count} previously downloaded files")
+    logger.info(f"Found {initial_file_count} previously downloaded files")
 
     crawler = BeautifulSoupCrawler(
         request_handler_timeout=datetime.timedelta(seconds=300),
@@ -117,36 +117,25 @@ async def main() -> None:
     async def request_handler(context: BeautifulSoupCrawlingContext) -> None:
         context.log.info(f'Processing {context.request.url} ...')
 
-        # Find all links on the page
         soup = context.soup
-        links = soup.find_all(['a', 'img'])  # Include both links and images
+        links = soup.find_all(['a', 'img'])
 
         for link in links:
-            # Handle both href (for links) and src (for images)
             url = link.get('href') or link.get('src')
             if url:
-                # Convert relative URLs to absolute URLs
                 absolute_url = urljoin(context.request.url, url)
-
-                # Decode URL-encoded characters in the filename
                 decoded_url = unquote(absolute_url)
-
-                # Check file extension
                 file_extension = os.path.splitext(decoded_url.lower())[1]
 
                 if file_extension in DOCUMENT_TYPES:
                     if absolute_url not in processed_files:
                         processed_files.add(absolute_url)
 
-                        # Get the appropriate subdirectory
                         subdir = DOCUMENT_TYPES[file_extension]
-
-                        # Extract filename from URL or generate one
                         filename = os.path.basename(decoded_url)
                         if not filename or not os.path.splitext(filename)[1]:
                             filename = f"file_{len(processed_files)}{file_extension}"
 
-                        # Create full save path
                         save_path = os.path.join(base_dir, subdir, filename)
 
                         try:
@@ -163,7 +152,6 @@ async def main() -> None:
                             processed_files.remove(absolute_url)  # Remove from history if download failed
                             context.log.error(f'Failed to download {absolute_url}: {str(e)}')
                 else:
-                    # Only enqueue links (not image sources) for crawling
                     if link.name == 'a':
                         await context.enqueue_links(selector=f'a[href="{url}"]')
 
@@ -173,12 +161,12 @@ async def main() -> None:
     # Save final history
     save_download_history(processed_files)
 
-    # Print summary
+    # Print summary using standard logging
     new_downloads = len(processed_files) - initial_file_count
-    context.log.info(f"Download session completed:")
-    context.log.info(f"Previously downloaded files: {initial_file_count}")
-    context.log.info(f"New files downloaded: {new_downloads}")
-    context.log.info(f"Total unique files: {len(processed_files)}")
+    logger.info("Download session completed:")
+    logger.info(f"Previously downloaded files: {initial_file_count}")
+    logger.info(f"New files downloaded: {new_downloads}")
+    logger.info(f"Total unique files: {len(processed_files)}")
 
 if __name__ == '__main__':
     asyncio.run(main())
