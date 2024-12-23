@@ -15,4 +15,4 @@ downloaded_pdfs/
 .venv
 .idea
 .env
-download_history.json
+conf/download_history.json

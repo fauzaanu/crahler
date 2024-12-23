@@ -1,11 +1,15 @@
 import asyncio
 import datetime
-import os
 import json
-from urllib.parse import urljoin, unquote, urlparse, urlunparse
-import aiohttp
-from crawlee.beautifulsoup_crawler import BeautifulSoupCrawler, BeautifulSoupCrawlingContext
 import logging
+import os
+from urllib.parse import urljoin, unquote
+from urllib.parse import urlparse, urlunparse
+
+import aiohttp
+from crawlee import Glob
+from crawlee.beautifulsoup_crawler import BeautifulSoupCrawler, BeautifulSoupCrawlingContext
+from dotenv import load_dotenv
 
 # Set up basic logging
 logging.basicConfig(level=logging.INFO)
@@ -39,7 +43,7 @@ DOCUMENT_TYPES = {
     '.yml': 'data'
 }
 
-HISTORY_FILE = 'download_history.json'
+HISTORY_FILE = 'conf/download_history.json'
 
 def load_download_history():
     """Load the download history from file"""
@@ -63,7 +67,7 @@ def add_www_to_url(url: str) -> str:
         parsed = parsed._replace(netloc=f'www.{parsed.netloc}')
     return urlunparse(parsed)
 
-async def download_file(url: str, save_path: str, context) -> None:
+async def download_file(url: str, save_path: str, context) -> bool:
     """Download a file from the given URL and save it to the specified path."""
     async with aiohttp.ClientSession() as session:
         try:
@@ -92,9 +96,57 @@ async def download_file(url: str, save_path: str, context) -> None:
                             return True
                 except Exception as e2:
                     context.log.error(f"Error downloading (both with and without www): {url}: {str(e2)}")
+                    with open("conf/error_links.txt", "a") as error_tracker:
+                        error_tracker.write(url+"\n")
+                    return False
             else:
                 context.log.error(f"Error downloading {url}: {str(e)}")
+                with open("conf/error_links.txt", "a") as error_tracker:
+                    error_tracker.write(url+"\n")
             return False
+
+
+def validate_url(url):
+    """
+    Validates and ensures the input string is a properly formatted HTTP/HTTPS URL.
+    If the URL is missing a scheme, it defaults to "http".
+
+    Args:
+        url (str): The URL to validate.
+
+    Returns:
+        str: A validated and properly formatted URL.
+
+    Raises:
+        ValueError: If the URL is invalid.
+    """
+    if not isinstance(url, str):
+        raise ValueError("URL must be a string")
+
+    # Parse the URL
+    parsed_url = urlparse(url)
+
+    # If scheme is missing, default to "http"
+    if not parsed_url.scheme:
+        parsed_url = parsed_url._replace(scheme="http")
+
+    # If netloc is missing but path looks like a domain, adjust accordingly
+    if not parsed_url.netloc:
+        if '/' in parsed_url.path:
+            path_parts = parsed_url.path.split('/', 1)
+            parsed_url = parsed_url._replace(netloc=path_parts[0], path='/' + path_parts[1])
+        else:
+            parsed_url = parsed_url._replace(netloc=parsed_url.path, path="")
+
+    # Ensure the scheme is either HTTP or HTTPS
+    if parsed_url.scheme not in ["http", "https"]:
+        raise ValueError("URL must start with 'http' or 'https'")
+
+    # Rebuild the URL
+    validated_url = urlunparse(parsed_url)
+
+    return validated_url
+
 
 async def main() -> None:
     base_dir = "downloaded_files"
@@ -107,10 +159,15 @@ async def main() -> None:
     processed_files = load_download_history()
     initial_file_count = len(processed_files)
     logger.info(f"Found {initial_file_count} previously downloaded files")
+    from crawlee._types import ConcurrencySettings
+    ConSet = ConcurrencySettings(
+        max_tasks_per_minute=60
+    )
 
     crawler = BeautifulSoupCrawler(
         request_handler_timeout=datetime.timedelta(seconds=300),
         retry_on_blocked=True,
+        concurrency_settings=ConSet
     )
 
     @crawler.router.default_handler
@@ -152,9 +209,28 @@ async def main() -> None:
                             processed_files.remove(absolute_url)  # Remove from history if download failed
                             context.log.error(f'Failed to download {absolute_url}: {str(e)}')
                 else:
-                    if link.name == 'a':
-                        await context.enqueue_links(selector=f'a[href="{url}"]')
 
+                    # dynamically load the link data from a banned.txt file which would have all the GLob links within
+                    with open("conf/banned.txt", "r") as banned_links:
+                        blinks = banned_links.readlines()
+
+                    banned_links = []
+
+                    for link in blinks:
+                        try:
+                            url = validate_url(url)
+                            banned_links.append(Glob(link.strip()))
+                        except ValueError:
+                            continue
+
+                    if any(blink.match(url) for blink in banned_links):
+                        context.log.info(f'Skipping banned link: {url}')
+                        continue
+
+
+                    if link.name == 'a':
+                        await context.enqueue_links(selector=f'a[href="{url}"]', exclude=banned_links)
+    load_dotenv()
     initial_url = os.getenv('INITIAL_URL', 'https://example.com')
     await crawler.run([initial_url])
 
